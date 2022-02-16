@@ -1,0 +1,685 @@
+---
+title: "PSTAT131 Final Project - Theo Lee (6867162) and Natasha Leodjaja (8935389)"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,include=FALSE}
+library(dplyr)
+library(glmnet)
+library(readr)
+library(maps)
+library(tidyr)
+library(maptree)
+library(e1071)
+library(ggmap)
+library(tidytable) # left_join
+library(ggplot2)
+library(openintro) # abbr2state
+library(stringr)
+library(tree)
+library(ROCR)
+library(janitor)
+library(ISLR) 
+library(tidyverse) 
+library(class) 
+library(FNN)
+library(randomForest)
+library(gbm)
+```
+
+**Census Data**
+
+```{r}
+state.name <- c(state.name, "District of Columbia")
+state.abb <- c(state.abb, "DC")
+## read in census data
+census <- read_csv("/Users/theolee/Desktop/acs2017_county_data.csv") %>% 
+  dplyr::select(-CountyId, -ChildPoverty, -Income, -IncomeErr, -IncomePerCap, -IncomePerCapErr) %>%
+  mutate(State = state.abb[match(`State`, state.name)]) %>%
+  filter(State != "PR")
+head(census)
+```
+
+**Education Data**
+
+```{r}
+## read in education data
+education <- read_csv("/Users/theolee/Desktop/education.csv") %>%
+  filter(!is.na(`2003 Rural-urban Continuum Code`)) %>%
+  filter(State != "PR") %>%
+  select(-`FIPS Code`,
+         -`2003 Rural-urban Continuum Code`,
+         -`2003 Urban Influence Code`,
+         -`2013 Rural-urban Continuum Code`,
+         -`2013 Urban Influence Code`) %>%
+  dplyr::rename(County = `Area name`)
+head(education)
+```
+
+**Preliminary Data Analysis**
+
+1. (1 pts) Report the dimension of census. (1 pts) Are there missing values in the data set? (1 pts) Compute the total number of distinct values in State in census to verify that the data contains all states and a federal district.
+
+```{r}
+dim(census) # dimensions
+sum(is.na(census)) # checking for NA values
+length(table(census$State)) # calculating the number of distinct values in state
+```
+
+The dimensions of census are 3142 rows by 31 columns. There are no missing values in the data set. The total number of distinct values in State in census is 51 because it includes Puerto Rico which is a US territory. 
+
+2. (1 pts) Report the dimension of education. (1 pts) How many distinct counties contain missing values in the data set? (1 pts) Compute the total number of distinct values in County in education. (1 pts) Compare the values of total number of distinct county in education with that in census. (1 pts) Comment on your findings.
+
+```{r}
+dim(education) # dimensions 
+sum(rowSums(is.na(education) | education == "")) # distinct counties containing NA values
+length(table(education$County)); length(table(census$County))# calculating the number of distinct values in education
+```
+
+The dimensions of education are 3143 rows by 42 columns. There are 273 distinct counties containing missing values in the dataset. The total number of distinct counties in education and in census are the same. 
+
+**Data Wrangling**
+
+3. (2 pts) Remove all NA values in education, if there is any.
+
+```{r}
+education <- na.omit(education) # removing NA values from education 
+sum(is.na(education))
+```
+
+4. (2 pts) In education, in addition to State and County, we will start only on the following 4 features: Less than a high school diploma, 2015-19, High school diploma only, 2015-19, Some college or associate's degree, 2015-19, and Bachelor's degree or higher, 2015-19. Mutate the education dataset by selecting these 6 features only, and create a new feature which is the total population of that county.
+
+```{r}
+# mutate education to contain 6 features
+education <- education %>%
+  select("State","County","Less than a high school diploma, 2015-19","High school diploma only, 2015-19","Some college or associate's degree, 2015-19","Bachelor's degree or higher, 2015-19") %>% 
+  mutate(CountyPopulation = rowSums(.[3:6]))
+```
+
+5. (3 pts) Construct aggregated data sets from education data: i.e., create a state-level summary into a dataset named education.state.
+
+```{r}
+education.state <- education %>%
+  group_by(State) %>%
+  summarise_at(vars(-County), funs(sum))
+
+education.state
+```
+
+6. (4 pts) Create a data set named state.level on the basis of education.state, where you create a new feature which is the name of the education degree level with the largest population in that state.
+
+```{r}
+state.level <- education.state[-6]
+state.level$majority <- colnames(state.level)[apply(state.level,1,which.max)]
+
+state.level$majority
+```
+
+**Visualization**
+
+```{r}
+# the variable states contain information to draw white polyogons
+# fill-colors are determined by region
+states <- map_data("state")
+
+ggplot(data = states) + 
+  geom_polygon(aes(x = long, y = lat, fill = region, group = group),
+               color = "white") + 
+  coord_fixed(1.3) +
+  guides(fill=FALSE)  # color legend is unnecessary for this example and takes too long
+```
+
+7. (6 pts) Now color the map (on the state level) by the education level with highest population for each state. Show the plot legend. First, combine states variable and state.level we created earlier using left_join(). Note that left_join() needs to match up values of states to join the tables. A call to left_join() takes all the values from the first table and looks for matches in the second table. If it finds a match, it adds the data from the second table; if not, it adds missing values. Here, we’ll be combing the two data sets based on state name. However, the state names in states and state.level can be in different formats: check them! Before using left_join(), use certain transform to make sure the state names in the two data sets: states (for map drawing) and state.level (for coloring) are in the same formats. Then left_join().
+
+```{r}
+# abbreviate state names
+states['region'] <- state2abbr(states$region)
+
+# rename region to State in order to left join
+states <- states %>% rename_at('region',~'State')
+
+# left join both datasets
+states <- states %>% left_join(state.level, by='State')
+
+# states for map drawing and state.level for coloring
+ggplot(data = states) + 
+  geom_polygon(aes(x = long, y = lat, fill = majority, group = group),
+               color = "white") + 
+  coord_fixed(1.3) +
+  guides(fill=FALSE)  
+```
+
+8. (6 pts) (Open-ended) Create a visualization of your choice using census data. Use this R graph gallery for ideas and inspiration.
+
+```{r}
+# separate dataset into several datasets
+# group them by State and get the total sum
+q8 <- census %>%
+  group_by(State) %>%
+  summarise_at(vars(-County), funs(sum))
+
+# group by gender
+p1 <- q8 %>%
+  pivot_longer('Men':'Women', names_to = "Gender", values_to = "GenderTotal")
+
+# group by race
+p2 <- p1 %>%
+  pivot_longer('Hispanic':'Pacific', names_to = "Race", values_to = "RaceTotal")
+
+# Stacked
+par(mfrow=c(1,2))
+ggplot(p2, aes(fill=Gender, y=GenderTotal, x=State)) + 
+    geom_bar(position="stack", stat="identity")
+ggplot(p2, aes(fill=Race, y=RaceTotal, x=State)) + 
+    geom_bar(position="stack", stat="identity")
+```
+
+9. The census data contains county-level census information. In this problem, we clean and aggregate the information as follows. (4 pts) Start with census, filter out any rows with missing values, convert {Men, Employed, VotingAgeCitizen} attributes to percentages, compute Minority attribute by combining {Hispanic, Black, Native, Asian, Pacific}, remove these variables after creating Minority, remove {Walk, PublicWork, Construction, Unemployment}.
+(Note that many columns are perfectly collineared, in which case one column should be deleted.)
+
+```{r}
+census2 <- na.omit(census)
+census2 <- transform(census2,Men=census2$Men/census2$TotalPop)
+census2 <- transform(census2,Employed=census2$Employed/census2$TotalPop)
+census2 <- transform(census2,VotingAgeCitizen=census2$VotingAgeCitizen/census2$TotalPop)
+census2$minority <- census2$Hispanic+census2$Black+census2$Native+census2$Asian+census2$Pacific
+census2 <- select(census2,-c(Hispanic, Black, Native, Asian, Pacific, Walk, PublicWork, Construction, Unemployment, Women, White)) 
+# taking out women and white features to reflect percentage men and minority 
+census.clean <- census2
+```
+
+10. (1 pts) Print the first 5 rows of census.clean
+
+```{r}
+head(census.clean, 5)
+```
+
+**Dimensionality reduction**
+
+11. Run PCA for the cleaned county level census data (with State and County excluded). (2 pts) Save the first two principle components PC1 and PC2 into a two-column data frame, call it pc.county. (2 pts) Discuss whether you chose to center and scale the features before running PCA and the reasons for your choice. (2 pts) What are the three features with the largest absolute values of the first principal component? (2 pts) Which features have opposite signs and what does that mean about the correlation between these features?
+
+```{r}
+# remove state and county
+census.clean2 <- subset(census.clean,select=-c(State, County))
+pr.out = prcomp(census.clean2, center=TRUE, scale=TRUE) # center and scale features
+
+# save PC1 and PC2 into a 2 col dataframe
+pc.county <- data.frame(pr.out$x[,1],pr.out$x[,2])
+
+# largest abs value of PC1
+head(sort(abs(pr.out$rotation[,1]),decreasing=TRUE))
+
+# features have opposite signs 
+pr.out$rotation[,1]
+```
+
+WorkAtHome, SelfEmployed and Drive are the three features with the largest absolute values of the first principal component. We chose to center and scale our variables to minimize differences between the way they are recorded (where some are percentages, others are hard numbers). Features that have opposite signs in the first PC include Poverty, Service, Office, Production, Drive, Carpool, MeanCommute, PrivateWork, and minority. The opposite sign implies they are negatively correlated with the first PC. 
+
+12. (2 pts) Determine the number of minimum number of PCs needed to capture 90% of the variance for the analysis. (2 pts) Plot proportion of variance explained (PVE) and cumulative PVE.
+
+```{r}
+pr.out = prcomp(census.clean[-c(1:2)], center=TRUE, scale=TRUE) 
+pr.var=pr.out$sdev^2 # proportion of variance explained by each PC
+pve=(pr.var)/(sum(pr.var)) 
+
+par(mfrow=c(1,2))
+plot(pve, xlab="Principal Component",
+ylab="Proportion of Variance Explained ", ylim=c(0,1),type='b')
+plot(cumsum(pve), xlab="Principal Component ",
+ylab=" Cumulative Proportion of Variance Explained ", ylim=c(0,1), type='b')
+```
+
+We need roughly 12 PCs to capture 90% of the variance. 
+
+**Clustering**
+
+13. (2 pts) With census.clean (with State and County excluded), perform hierarchical clustering with complete linkage. (2 pts) Cut the tree to partition the observations into 10 clusters. (2 pts) Re-run the hierarchical clustering algorithm using the first 2 principal components from pc.county as inputs instead of the original features. (2 pts) Compare the results and comment on your observations. For both approaches investigate the cluster that contains Santa Barbara County. (2 pts) Which approach seemed to put Santa Barbara County in a more appropriate clusters? Comment on what you observe and discuss possible explanations for these observations.
+
+```{r}
+# perform hierarchical clustering with complete linkage
+cen.dist = dist(census.clean) 
+set.seed(1)
+cen.hclust = hclust(cen.dist, method='complete') # complete linkage
+
+# cut the tree to partition into 10 clusters
+cen.clus = cutree(cen.hclust, 10)
+
+# rerun hierarchical clustering using first 2 PCA from pc.county as inputs
+pc.dist = dist(pc.county)
+set.seed(1)
+pc.hclust = hclust(pc.dist)
+pc.clus = cutree(pc.hclust, 10)
+
+# compare results and comment on your observations
+table(cen.clus)
+table(pc.clus)
+
+# investigate cluster that contains SB county (index 228)
+cen.clus[228] # 1 cluster
+pc.clus[228] # 5 clusters
+```
+
+It seems that cen.clus has a higher first cluster observation as compared to pc.clus. This is because we're computing the clusters for all data instead of using PC1 and PC2. When investigating clusters that contains Santa Barbara county, cen.clus produced 1 cluster while pc.clus produced 5 clusters. pc.clus approach seemed to put Santa Barabra County in a more appropriate cluster because it clusters PC1 and PC2 which is more informative than clustering all data.
+
+**Modeling**
+
+```{r}
+# we join the two datasets
+all <- census.clean %>%
+  left_join(education, by = c("State"="State", "County"="County")) %>% 
+  na.omit
+```
+
+14. (4 pts) Transform the variable Poverty into a binary categorical variable with two levels: 1 if Poverty is greater than 20, and 0 if Poverty is smaller than or equal to 20. Remove features that you think are uninformative in classfication tasks.
+
+```{r}
+# partition dataset into 80% training and 20% testing
+set.seed(123) 
+n <- nrow(all)
+idx.tr <- sample.int(n, 0.8*n) 
+all.tr <- all[idx.tr, ]
+all.te <- all[-idx.tr, ]
+
+# 10 cross validation folds
+set.seed(123) 
+nfold <- 10
+folds <- sample(cut(1:nrow(all.tr), breaks=nfold, labels=FALSE))
+
+# error rate function
+calc_error_rate = function(predicted.value, true.value){
+  return(mean(true.value!=predicted.value))
+}
+
+# records is used to record the classification performance of 
+# each method in the subsequent problems
+records = matrix(NA, nrow=3, ncol=2)
+colnames(records) = c("train.error","test.error")
+rownames(records) = c("tree","logistic","lasso")
+```
+
+```{r}
+# transforming poverty into a binary categorical variable
+all.tr = all.tr %>%
+  mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+all.te = all.te %>%
+  mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+
+# removing redundant features
+all.tr <- select(all.tr,-c(VotingAgeCitizen,Transit,OtherTransp,MeanCommute))
+all.te <- select(all.te,-c(VotingAgeCitizen,Transit,OtherTransp,MeanCommute))
+```
+
+**Classification**
+
+15. Decision tree: (2 pts) train a decision tree by cv.tree(). (2 pts) Prune tree to minimize misclassification error. Be sure to use the folds from above for cross-validation. (2 pts) Visualize the trees before and after pruning. (1 pts) Save training and test errors to records object. (2 pts) Interpret and discuss the results of the decision tree analysis. (2 pts) Use this plot to tell a story about Poverty.
+
+```{r}
+# removing spaces in features for use with cv.out()
+all2.tr <- clean_names(all.tr) 
+all2.te <- clean_names(all.te)
+
+# define the true labels of the test cases
+poverty.test <- all2.te$poverty
+
+tree.all2 <- tree(poverty~.,data=all2.tr)
+
+# Plot the tree
+draw.tree(tree.all2, nodeinfo=TRUE, cex = 0.4) 
+title("Classification Tree Built on Training Set")
+
+# Set random seed
+set.seed(3)
+# K-Fold cross validation
+cv = cv.tree(tree.all2, FUN=prune.misclass, K=folds) # Print out cv
+best.cv = min(cv$size[cv$dev == min(cv$dev)])
+best.cv
+
+pruned.tree <- prune.misclass(tree.all2,best.cv)
+draw.tree(pruned.tree, nodeinfo=TRUE, cex = 0.4) 
+title("Pruned tree of size 3")
+
+set.seed(123)
+# unpruned tree 
+tr.unpruned = predict(tree.all2, all2.tr, type = "class")
+ts.unpruned = predict(tree.all2, all2.te, type = "class")
+# calculate training error and test error
+tr.unpruned.err <- calc_error_rate(tr.unpruned,all2.tr$poverty)
+ts.unpruned.err <- calc_error_rate(ts.unpruned,all2.te$poverty)
+tr.unpruned.err;ts.unpruned.err
+
+# pruned tree
+tr.pruned = predict(pruned.tree, all2.tr, type = "class")
+ts.pruned = predict(pruned.tree, all2.te, type = "class")
+# calculate training error and test error
+tr.pruned.err <- calc_error_rate(tr.pruned,all2.tr$poverty)
+ts.pruned.err <- calc_error_rate(ts.pruned,all2.te$poverty)
+
+# put the values into records table 
+records[1,1] <- tr.pruned.err
+records[1,2] <- ts.pruned.err
+records
+```
+
+The tree with 3 terminal nodes results in the lowest error. The test error rate for the training dataset is 0.16 and the test error rate for the testing dataset is 0.17 after pruning (producing a lower test error where we trim the tree to a pre-determined size). We can see from the tree that people who are a minority and employed have the same poverty rate of people who are a minority and unemployed. Whereas people who are self employed are less likely to fall under poverty.
+
+16. (2 pts) Run a logistic regression to predict Poverty in each county. (1 pts) Save training and test errors to records variable. (1 pts) What are the significant variables? (1 pts) Are they consistent with what you saw in decision tree analysis? (2 pts) Interpret the meaning of a couple of the significant coefficients in terms of a unit change in the variables.
+
+```{r}
+set.seed(123) 
+n <- nrow(all)
+idx.tr <- sample.int(n, 0.8*n)
+all.tr <- all[idx.tr, ]
+all.te <- all[-idx.tr, ]
+# define the true labels of the test cases
+poverty.test <- all.te$Poverty
+
+# transforming poverty into a binary categorical variable
+all.tr = all.tr %>%
+  mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+all.te = all.te %>%
+  mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+
+all.tr <- select(all.tr,-c(State,County))
+all.te <- select(all.te,-c(State,County))
+
+# logistic regression on training data to predict poverty
+glm.fit = glm(Poverty~. , data=all.tr, family=binomial)
+summary(glm.fit)
+
+# estimated probability
+prob.train <- predict(glm.fit, all.tr, type="response")
+prob.test <- predict(glm.fit, all.te, type="response")
+
+prob.train = ifelse(prob.train > 0.5, "1", "0")
+prob.test = ifelse(prob.test > 0.5,"1", "0")
+
+records[2,1] <- calc_error_rate(prob.train,all.tr$Poverty)
+records[2,2] <- calc_error_rate(prob.test,all.te$Poverty)
+records
+```
+
+The results we get for logistic regression is significantly better than the ones we get from decision tree. The training error is 0.12 whereas the test error is 0.12, both are lower than decision tree error rates. When running the summary for the logistic regression model, we can see that education level, employment status and production plays a very significant role in terms of predicting poverty rate.
+
+17. You may notice that you get a warning glm.fit: fitted probabilities numerically 0 or 1 occurred. As we discussed in class, this is an indication that we have perfect separation (some linear combination of variables perfectly predicts the winner).
+This is usually a sign that we are overfitting. One way to control overfitting in logistic regression is through regularization.
+
+(3 pts) Use the cv.glmnet function from the glmnet library to run a 10-fold cross validation and select the best regularization parameter for the logistic regression with LASSO penalty. Set lambda = seq(1, 20) * 1e-5 in cv.glmnet() function to set pre-defined candidate values for the tuning parameter lambda.
+
+(1 pts) What is the optimal value of lambda in cross validation? (1 pts) What are the non-zero coefficients in the LASSO regression for the optimal value of lambda? (1 pts) How do they compare to the unpenalized logistic regression? (1 pts) Comment on the comparison. (1 pts) Save training and test errors to the records variable.
+
+```{r}
+set.seed(123)
+n <- nrow(all)
+idx.tr <- sample.int(n, 0.8*n) 
+all.tr <- all[idx.tr, ]
+
+df <- all.tr %>% select(-c(County,State))
+idx.tr <- sample.int(n, 0.8*n) 
+train <- df[idx.tr, ]
+test <- df[-idx.tr, ]
+
+train <- na.omit(train)
+test <- na.omit(test)
+
+YTrain = train$Poverty
+XTrain = train %>% select(-Poverty) %>% scale(center = TRUE, scale = TRUE)
+
+YTest = test$Poverty
+XTest = test %>% select(-Poverty) %>% scale(center = TRUE, scale = TRUE)
+
+lasso_lambda = seq(1, 20)*1e-5
+lasso.mod <- glmnet(XTrain, YTrain, alpha=1)
+cv.out.lasso = cv.glmnet(XTrain, YTrain, nfolds = 10, lambda=lasso_lambda)
+plot(cv.out.lasso)
+abline(v = log(cv.out.lasso$lambda.min), col="red", lwd=3, lty=2)
+
+bestlam = cv.out.lasso$lambda.min
+
+XTrain <- as.matrix(XTrain)
+XTest <- as.matrix(XTest)
+
+train.pred <- predict(lasso.mod, s=bestlam, newx=XTrain)
+records[3,1] <- mean((train.pred - YTrain)^2)
+test.pred <- predict(lasso.mod, s=bestlam, newx=XTest)
+records[3,2] <- mean((test.pred - YTest)^2)
+records
+
+lasso.coef=predict(lasso.mod,type="coefficients",s=bestlam)
+lasso.coef
+```
+A lot of the coefficients gives non zero values such as total population, minority, production and etc. Compared to the unpenalized logistic regression, LASSO did worse as the training and testing MSE is significantly higher than the train and test error of logistic regression.
+
+18. (6 pts) Compute ROC curves for the decision tree, logistic regression and LASSO logistic regression using predictions on the test data. Display them on the same plot. (2 pts) Based on your classification results, discuss the pros and cons of the various methods. (2 pts) Are the different classifiers more appropriate for answering different kinds of questions about Poverty?
+
+```{r}
+all.tr <- select(all.tr,-c(State,County))
+all.tr = all.tr %>%
+  mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+poverty.test <- all.tr$Poverty
+# generating ROC curve for logistic regression
+prob.training = predict(glm.fit, type="response")
+prediction.log = prediction(as.numeric(prob.training),as.numeric(poverty.test))
+perf.log = performance(prediction.log, measure="tpr", x.measure="fpr")
+plot(perf.log, col=2, lwd=3, main="ROC curve for logistic regression") 
+abline(0,1)
+
+# generating ROC curve for decision tree
+pruned <- predict(pruned.tree,type="class")
+prediction.tree = prediction(as.numeric(pruned),as.numeric(poverty.test))
+perf.log = performance(prediction.tree, measure="tpr", x.measure="fpr")
+plot(perf.log, col=2, lwd=3, main="ROC curve for decision tree") 
+abline(0,1)
+
+# generating ROC curve for lasso 
+# lassoed <- predict(,type="class")
+# prediction.lasso = prediction(as.numeric(),as.numeric(poverty.test))
+# perf.log = performance(prediction.tree, measure="tpr", x.measure="fpr")
+# plot(perf.log, col=2, lwd=3, main="ROC curve for lasso") 
+# abline(0,1)
+```
+
+**Taking it further**
+
+19. (9 pts) Explore additional classification methods. Consider applying additional two classification methods from KNN, LDA, QDA, SVM, random forest, boosting, neural networks etc. (You may research and use methods beyond those covered in this course). How do these compare to the tree method, logistic regression, and the lasso logistic regression?
+
+Method 1: Bagging and Random Forest
+```{r}
+bag = randomForest(poverty ~ ., data=all2.tr,importance=TRUE)
+bag
+
+plot(bag)
+legend("top", colnames(bag$err.rate),col=1:4,cex=0.8,fill=1:4)
+
+yhat.bag = predict(bag, newdata = all2.te, type = "response") 
+test.bag.err = mean(yhat.bag != all2.te$poverty)
+test.bag.err
+
+prob.bag = predict(bag, newdata = all2.te, type = "prob") 
+head(prob.bag)
+```
+
+```{r}
+set.seed(123)
+rf = randomForest(poverty ~ ., data=all2.tr, importance=TRUE)
+rf
+plot(rf)
+
+yhat.rf = predict(rf, newdata = all2.te) 
+test.rf.err = mean(yhat.rf != all2.te$poverty) 
+test.rf.err
+
+importance(rf)
+
+varImpPlot(rf, sort=T,
+           main="Variable Importance for random forest", n.var=5)
+```
+
+The test set error rate is 0.11; this indicates that random forests did provide a slight improvement over bagging (test error 0.12) in this case. The variable importance results indicate that across all of the trees considered in the random forest, employed and minority are by far the two most important variables in terms of Model Accuracy and Gini index. 
+
+Method 2: KNN
+```{r}
+set.seed(123)
+idx.tr <- sample.int(n, 0.8*n) 
+all.tr <- all[idx.tr, ]
+
+all.tr = all.tr %>%
+  mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+
+df <- all.tr %>% select(-c(County,State))
+idx.tr <- sample.int(n, 0.8*n) 
+train <- df[idx.tr, ]
+test <- df[-idx.tr, ]
+
+# train <- train %>%
+#   mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+# test <- test %>%
+#   mutate(Poverty=as.factor(ifelse(Poverty>20,"1","0")))
+
+train <- na.omit(train)
+test <- na.omit(test)
+
+YTrain = train$Poverty
+XTrain = train %>% select(-Poverty) %>% scale(center = TRUE, scale = TRUE)
+
+YTest = test$Poverty
+XTest = test %>% select(-Poverty) %>% scale(center = TRUE, scale = TRUE)
+
+# train classifier and make predictions on training data 
+pred.YTtrain = knn(train=XTrain, test=XTrain, cl=YTrain)
+# confusion matrix
+conf.train = table(predicted=pred.YTtrain, true=YTrain) 
+
+# trainning error rate
+1 - sum(diag(conf.train)/sum(conf.train))
+
+pred.YTest = knn(train=XTrain, test=XTest, cl=YTrain)
+# Get confusion matrix
+conf.test = table(predicted=pred.YTest, true=YTest) 
+# Test error rate
+1 - sum(diag(conf.test)/sum(conf.test))
+```
+
+The test error rate is slightly higher than the training error rate, which is expected. The test error rate obtained by 2-NN classifier is quite ideal as 19.8% of the test observations are incorrectly predicted. If we compare both methods to LASSO, logistic and decision tree, latter models provided better or lower error rates. However, bagging and random forest have a fairly similar output to logistic regression. Both giving low train and test error rates. 
+
+20. (9 pts) Tackle at least one more interesting question. Creative and thoughtful analysis will be rewarded! Some possibilities for further exploration are:
+
+Swing counties are battleground counties that can make or break an election win. They are called swing counties because they seesaw back and forth between voting for Democratic and Republican parties. While the question of what makes them so difficult to predict has since been removed from this project in an updated version, we feel that it still poses an interesting question. That in mind, we will modify the question to instead encompass Donald Trump's 2016 election win over Hillary Clinton, as 1) it was a surprise almost no one saw coming, and 2) the provided datasets for this project only encompass the time up until 2019. We will perform exploratory analysis using a convenience sample from Ballotpedia's "List of Pivot Counties - the 206 counties that voted Obama-Obama-Trump," taking the first 20 unique county names and reconciling them with our provided datasets. 
+
+Exploratory Analysis of Swing Counties
+```{r}
+# take convenience sample of 20 counties from Ballotpedia's "Election results 2020: Pivot counties in the 2020 presidential election" (first twenty w/o duplicate names)
+
+pivot.counties<-c('Woodruff County','Conejos County','Huerfano County','Las Animas County','Pueblo County','Pinellas County','St. Lucie County','Dooly County','Peach County','Twiggs County','Jo Daviess County','Whiteside County','LaPorte County','Porter County','Allamakee County','Aroostook County','Kennebec County','Penobscot County','Eaton County','Gogebic County')
+
+pivot_counties <- filter(census,County %in% pivot.counties) # extract pivot counties from census data 
+head(pivot_counties)
+```
+
+```{r}
+industry.median <- c(median(census$Professional),median(census$Service),median(census$Office),median(census$Construction), median(census$Production))
+industry.median2 <- c(median(pivot_counties$Professional),median(pivot_counties$Service),median(pivot_counties$Office),median(pivot_counties$Construction), median(pivot_counties$Production))
+industry.name <- c('Professional','Service','Office','Construction','Production')
+
+op <- par(mfrow = c(1,2))
+barplot(industry.median,names.arg=industry.name,main="median industry type",
+        xlab="industry",cex.names=0.4,col=c("blue"))
+barplot(industry.median2,names.arg=industry.name,main="industry type (swing counties)",
+        xlab="industry",cex.names=0.4,col=c("blue"))
+```
+
+```{r}
+ethnicity.median <- c(median(census$Hispanic),median(census$White),median(census$Black),median(census$Native), median(census$Asian),median(census$Pacific))
+ethnicity.median2 <- c(median(pivot_counties$Hispanic),median(pivot_counties$White),median(pivot_counties$Black),median(pivot_counties$Native), median(pivot_counties$Asian),median(pivot_counties$Pacific))
+industry.name <- c('Hispanic','White','Black','Native','Asian','Pacific')
+
+op <- par(mfrow = c(1,2))
+barplot(ethnicity.median,names.arg=industry.name,main="median ethnicity",
+        xlab="ethnicity",cex.names=0.5,col=c("blue"))
+barplot(ethnicity.median2,names.arg=industry.name,main="ethnicity (swing counties)",
+        xlab="ethnicity",cex.names=0.5,col=c("blue"))
+```
+```{r}
+print("Citizen voting age - all vs. swing counties (bottom)")
+median(census$VotingAgeCitizen)
+median(pivot_counties$VotingAgeCitizen)
+
+print("Poverty - all vs. swing counties (bottom)")
+median(census$Poverty)
+median(pivot_counties$Poverty)
+
+print("Unemployment - all vs. swing counties (bottom)")
+median(census$Unemployment)
+median(pivot_counties$Unemployment)
+
+print("Family Work - all vs. swing counties (bottom)")
+median(census$FamilyWork)
+median(pivot_counties$FamilyWork)
+```
+
+```{r}
+census2 = census
+pivot.counties2 = pivot_counties
+census2 = census2 %>% mutate(Men = Men/TotalPop)
+pivot.counties2 = pivot.counties2 %>% mutate(Men=Men/TotalPop)
+
+head(census2)
+head(pivot.counties2)
+
+print("% Men - all vs. swing counties (bottom)")
+median(census2$Men);median(pivot.counties2$Men)
+```
+```{r}
+glm.fit = glm(Poverty ~ Hispanic+White+Black+Asian+Pacific+Native,data=census2)
+summary(glm.fit)
+```
+
+```{r}
+education2 <- clean_names(education)
+pivot.counties2 <- filter(education2,county %in% pivot.counties) # extract pivot counties from census data 
+head(pivot.counties2)
+```
+
+```{r}
+# mutate the education levels in both data sets to percentages for better comparability 
+
+pivot.counties2 = pivot.counties2 %>%
+  mutate(less_than_a_high_school_diploma_2015_19=less_than_a_high_school_diploma_2015_19/county_population,high_school_diploma_only_2015_19=high_school_diploma_only_2015_19/county_population,some_college_or_associates_degree_2015_19=some_college_or_associates_degree_2015_19/county_population,bachelors_degree_or_higher_2015_19=bachelors_degree_or_higher_2015_19/county_population
+)
+
+education2 = education2 %>%
+  mutate(less_than_a_high_school_diploma_2015_19=less_than_a_high_school_diploma_2015_19/county_population,high_school_diploma_only_2015_19=high_school_diploma_only_2015_19/county_population,some_college_or_associates_degree_2015_19=some_college_or_associates_degree_2015_19/county_population,bachelors_degree_or_higher_2015_19=bachelors_degree_or_higher_2015_19/county_population
+)
+  
+head(pivot.counties2)
+head(education2)
+```
+```{r}
+counties.median <- c(median(education2$less_than_a_high_school_diploma_2015_19),median(education2$high_school_diploma_only_2015_19),median(education2$some_college_or_associates_degree_2015_19),median(education2$bachelors_degree_or_higher_2015_19))
+
+pivot.counties.median <- c(median(pivot.counties2$less_than_a_high_school_diploma_2015_19),median(pivot.counties2$high_school_diploma_only_2015_19), median(pivot.counties2$some_college_or_associates_degree_2015_19),median(pivot.counties2$bachelors_degree_or_higher_2015_19))
+                     
+education.level <- c('Less than HS','HS only','Some college','BA or higher')
+
+op <- par(mfrow = c(1,2))
+barplot(counties.median,names.arg=education.level,main="median education",
+        xlab="education",cex.names=0.4,col=c("blue"))
+barplot(pivot.counties.median,names.arg=education.level,main="education (swing counties)",
+        xlab="education",cex.names=0.4,col=c("blue"))
+```
+
+Exploratory analysis of the census and education data does not necessarily reveal a compelling explanation for what might make swing counties so difficult to predict. Comparing and contrasting the medians of key features reveals mostly equivalent results between counties as a whole and swing counties. However, we note that swing counties typically score higher in 1) unemployment, 2) poverty, 3) citizen voting age, and 4) Hispanic ethnicity. It is generally accepted that older demographics of voters tend to hold more conservative values because they have reached a more financially stable point in life. In this vein, the higher rates of poverty and unemployment in swing counties could be offsetting these more conservative values, thus making it difficult to predict the voting outcome of these counties. Furthermore, the Hispanic ethnicity in particular is noted to fall fairly close to the middle in the glm model on poverty which could offset poverty differences for the other ethnicity. In essence, it is likely a myriad of variables working in tandem that make the swing counties unpredictable. 
+
+21. (9 pts) (Open ended) Interpret and discuss any overall insights gained in this analysis and possible explanations. Use any tools at your disposal to make your case: visualize errors on the map, discuss what does/doesn’t seems reasonable based on your understanding of these methods, propose possible directions (collecting additional data, domain knowledge, etc).
+
+There are various studies that depict the hardships of achieving upwards mobility. Like our exploratory analysis in Question 20, these studies often seek to explore the effects of variables such as race, gender, location, and education level. For instance, it is common knowledge that there is a gender-wage disparity and that minority ethnic groups tend to not receive the same quality of education. The difficulty in assessing these effects, however, is predicated upon many of them overlapping. For instance, a person who lives in a so-called "poor area" is often simultaneously exposed to lower-quality education, which, in turn, affects their self-esteem and potential for future success. This feedback loop is further compounded by external influences (eg. friends or neighbors who might rope other individuals into dangerous activities), which make it harder for that individual to escape the poverty cycle. Taken together, this negative feedback loop points to a systematic imbalance in today's society wherein some people are set up to fail or will never have the same opportunities that others are afforded. 
+
+Similarly, this is the precedent for which Democratic and Republican lines are often drawn. Democratic core values are predicated upon ideas such as social equality, equal opportunity, and minority rights. By contrast, Republican values tend to emphasize the free market, deregulation, and restrictions on immigration - the idea being that the metaphorical lifeboat can only hold so many people before it sinks. Both sides present a valid argument, leading to spit lines which can be incredibly close in battleground counties. That in mind, it is likely a myriad of variables working in tandem that make the swing counties unpredictable. Using models specifically on poverty like we have in this project is unlikely to capture the nuances beyond broad conjecture that account for unpredictability of swing counties. Additionally, the poverty variable was often set to a binary indicator for this project with the value of 20 given arbitrarily. Future analysis might benefit from learning methods that explore the range of poverty in full.  
+
+Methods Avoided:
+We avoided SVM for question 19 as support vector machine does not work well with large datasets.
